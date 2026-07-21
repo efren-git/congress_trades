@@ -1,0 +1,11 @@
+In order to analyse the results in analysis.txt, this is what we will nedd to get.
+
+-Price of stock (when public, when traded)
+-Return between public and traded
+
+
+-Date when the stock peaked
+-Date sold: Need to find a way to check wether he exits or not the position entirely or partially 
+-Analyse the pnl based on
+    days to file, does later mean better trade? Create ranges (is_late,30-45 legal, 15-30 early, 0-15 updated)
+    position size relative to the congress member, bigger bet bigger win?

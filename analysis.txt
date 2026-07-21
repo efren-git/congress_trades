@@ -1,0 +1,16 @@
+What am i trying to analyse?
+Wether a member has an edge during the time they made a trade and when they disclosed it
+- Get the return for trade date and public date
+- When their trade peaks, if it is generally 3 months, 1 year ...
+
+Lag distribution vs. outcome: does days_to_file (how late the disclosure was) correlate with how good the trade turned out? 
+If late filers' trades perform better, that's suggestive of something worth flagging.
+
+Committee-adjacent trades: cross-reference theunitedstates.io/congress-legislators/committee-membership-current.json 
+(free, no key) — trades in sectors overseen by a member's committee assignments are the most-scrutinized pattern in this space 
+(e.g., healthcare committee members trading pharma).
+
+Sell-side timing: same analysis but on transaction_type == "Sale" — did they sell right before bad news, using the reverse of your 
+copy-trade logic (would shorting on their sell disclosure have worked)?
+
+Does a member of congress get a better pnl if they bet bigger and a worse pnl if they bet small
