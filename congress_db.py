@@ -124,8 +124,10 @@ class CongressDataBase:
         skipped_count = 0
 
         for _, row in trades.iterrows():
+            #trades.where(pd.notnull(trades),None) already makes it None, why put None again?
             values = [None if pd.isna(row[col]) else row[col] for col in columns]
             try:
+                #how does ignore work?
                 cursor.execute(f"""
                     INSERT OR IGNORE INTO raw_trade ({column_list_sql})
                     VALUES ({placeholders})

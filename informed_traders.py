@@ -65,7 +65,58 @@ class CongressData:
 class CongressTradeAnalyzer:
     def __init__(self, congress_db):
         self.db = congress_db
+        self._price_cache = {}  # Simple cache for prices
 
+    def _get_price(self, ticker, date):
+        """Get price with caching to avoid repeated API calls"""
+        # Create cache key
+        cache_key = f"{ticker}_{date.strftime('%Y-%m-%d')}"
+        
+        # Check cache first
+        if cache_key in self._price_cache:
+            return self._price_cache[cache_key]
+        
+        try:
+            # Download data for a broader window in case date falls on weekend/holiday
+            price_data = yf.download(
+                ticker, 
+                start=date - timedelta(days=5),
+                end=date + timedelta(days=5),
+                progress=False,
+                auto_adjust=True
+            )
+            
+            if price_data.empty:
+                self._price_cache[cache_key] = None
+                return None
+            
+            # Handle MultiIndex columns
+            if isinstance(price_data.columns, pd.MultiIndex):
+                close_col = ('Close', ticker)
+            else:
+                close_col = 'Close'
+            
+            if close_col not in price_data.columns:
+                self._price_cache[cache_key] = None
+                return None
+            
+            closes = price_data[close_col].dropna()
+            if len(closes) == 0:
+                self._price_cache[cache_key] = None
+                return None
+            
+            # Get closest date
+            closest_idx = (closes.index - date).abs().argmin()
+            price = float(closes.iloc[closest_idx])
+            
+            # Cache the result
+            self._price_cache[cache_key] = price
+            return price
+            
+        except Exception as e:
+            self._price_cache[cache_key] = None
+            return None
+    
     def _estimate_amount(self, low, high, estimation='mid'):
         """Estimate dollar amount from range"""
         if pd.isna(low) or pd.isna(high):
@@ -114,123 +165,6 @@ class CongressTradeAnalyzer:
         )
         
         return trades[trades['suspicious']]
- 
-    def estimate_shares(self, trade_row, estimation='mid'):
-        """Estimate number of shares from dollar ranges"""
-        if pd.isna(trade_row['ticker']) or pd.isna(trade_row['transaction_date']):
-            return None
-        
-        try:
-            transaction_date = pd.Timestamp(trade_row['transaction_date'])
-            
-            # Get price ON the transaction date (or nearest trading day)
-            price_data = yf.download(
-                trade_row['ticker'], 
-                start=transaction_date - timedelta(days=3),
-                end=transaction_date + timedelta(days=3),
-                progress=False
-            )
-            
-            if len(price_data) == 0:
-                return None
-            
-            # Use the closing price on or closest to the transaction date
-            # This is more accurate than a 10-day average
-            closest_date = min(price_data.index, key=lambda x: abs((x - transaction_date).days))
-            price = price_data.loc[closest_date, 'Close']
-            
-            if pd.isna(price) or price == 0:
-                return None
-                
-        except Exception as e:
-            print(f"Error getting price for {trade_row['ticker']}: {e}")
-            return None
-        
-        # Estimate dollar amount
-        amount = self._estimate_amount(
-            trade_row['amount_range_low'],
-            trade_row['amount_range_high'],
-            estimation
-        )
-        
-        if amount is None:
-            return None
-        
-        return amount / price
-
-    def portfolio_reconstruction(self, filer_id, start_date=None):
-        """Reconstruct a filer's portfolio over time"""
-        query = f"""
-            SELECT 
-                transaction_date,
-                ticker,
-                transaction_type,
-                amount_range_low,
-                amount_range_high
-            FROM raw_trade
-            WHERE filer_id = '{filer_id}'
-            AND ticker IS NOT NULL
-            AND ticker != ''
-            ORDER BY transaction_date
-        """
-        
-        trades = self.db.sql_to_pandas(query)
-        
-        if len(trades) == 0:
-            print(f"No trades found for filer {filer_id}")
-            return pd.DataFrame()
-        
-        # Convert transaction dates
-        trades['transaction_date'] = pd.to_datetime(trades['transaction_date'])
-        
-        # Filter by start date if provided
-        if start_date:
-            trades = trades[trades['transaction_date'] >= pd.Timestamp(start_date)]
-        
-        # Estimate shares for each trade (this might take a while)
-        print(f"Estimating shares for {len(trades)} trades...")
-        trades['estimated_shares'] = trades.apply(
-            lambda x: self.estimate_shares(x), axis=1
-        )
-        
-        # Drop trades where we couldn't estimate shares
-        trades = trades.dropna(subset=['estimated_shares'])
-        
-        if len(trades) == 0:
-            print("Could not estimate shares for any trades")
-            return pd.DataFrame()
-        
-        # Track portfolio changes
-        portfolio = {}
-        portfolio_snapshots = []
-        
-        for _, trade in trades.iterrows():
-            ticker = trade['ticker']
-            shares = trade['estimated_shares']
-            
-            # Handle different transaction types
-            if trade['transaction_type'] == 'Purchase':
-                portfolio[ticker] = portfolio.get(ticker, 0) + shares
-            elif 'Sale' in str(trade['transaction_type']):
-                # Both "Sale (Partial)" and "Sale (Full)"
-                current_shares = portfolio.get(ticker, 0)
-                if 'Full' in str(trade['transaction_type']):
-                    portfolio[ticker] = 0  # Sold all
-                else:
-                    portfolio[ticker] = max(0, current_shares - shares)
-            
-            # Remove zero positions
-            portfolio = {k: v for k, v in portfolio.items() if v > 0}
-            
-            portfolio_snapshots.append({
-                'date': trade['transaction_date'],
-                'ticker': ticker,
-                'action': trade['transaction_type'],
-                'shares_changed': shares,
-                'portfolio': portfolio.copy()
-            })
-        
-        return pd.DataFrame(portfolio_snapshots)
 
     def analyze_sell_timing(self):
         """Analysis 3: Do they sell before bad news?"""
@@ -337,6 +271,142 @@ class CongressTradeAnalyzer:
         print("Transaction types in database:")
         print(types)
         return types
+
+#
+
+    def portfolio_reconstruction(self, filer_id, start_date=None):
+        """Reconstruct a filer's portfolio over time"""
+        query = f"""
+            SELECT 
+                transaction_date,
+                ticker,
+                transaction_type,
+                amount_range_low,
+                amount_range_high
+            FROM raw_trade
+            WHERE filer_id = '{filer_id}'
+            AND ticker IS NOT NULL
+            AND ticker != ''
+            ORDER BY transaction_date
+        """
+        
+        trades = self.db.sql_to_pandas(query)
+        
+        if len(trades) == 0:
+            print(f"No trades found for filer {filer_id}")
+            return pd.DataFrame()
+        
+        # Get unique tickers and date ranges
+        trades['transaction_date'] = pd.to_datetime(trades['transaction_date'])
+        
+        # Download all unique tickers in batch
+        unique_tickers = trades['ticker'].unique().tolist()
+        print(f"Downloading prices for {len(unique_tickers)} unique tickers...")
+        
+        # Get date range for all trades
+        min_date = trades['transaction_date'].min() - timedelta(days=10)
+        max_date = trades['transaction_date'].max() + timedelta(days=10)
+        
+        # Download all tickers at once (much faster!)
+        try:
+            all_prices = yf.download(
+                unique_tickers,
+                start=min_date,
+                end=max_date,
+                progress=True,  # Show progress bar
+                auto_adjust=True
+            )
+        except Exception as e:
+            print(f"Error downloading batch prices: {e}")
+            return pd.DataFrame()
+        
+        if all_prices.empty:
+            print("No price data downloaded")
+            return pd.DataFrame()
+        
+        # Estimate shares for each trade using the downloaded data
+        trades['estimated_shares'] = trades.apply(
+            lambda row: self._estimate_shares_from_batch(row, all_prices),
+            axis=1
+        )
+        
+        # Rest of the portfolio reconstruction...
+        trades = trades.dropna(subset=['estimated_shares'])
+        
+        if len(trades) == 0:
+            print("Could not estimate shares for any trades")
+            return pd.DataFrame()
+        
+        # Track portfolio changes
+        portfolio = {}
+        portfolio_snapshots = []
+        
+        for _, trade in trades.iterrows():
+            ticker = trade['ticker']
+            shares = trade['estimated_shares']
+            
+            if trade['transaction_type'] == 'Purchase':
+                portfolio[ticker] = portfolio.get(ticker, 0) + shares
+            elif 'Sale' in str(trade['transaction_type']):
+                current_shares = portfolio.get(ticker, 0)
+                if 'Full' in str(trade['transaction_type']):
+                    portfolio[ticker] = 0
+                else:
+                    portfolio[ticker] = max(0, current_shares - shares)
+            
+            portfolio = {k: v for k, v in portfolio.items() if v > 0}
+            
+            portfolio_snapshots.append({
+                'date': trade['transaction_date'],
+                'ticker': ticker,
+                'action': trade['transaction_type'],
+                'shares_changed': shares,
+                'portfolio': portfolio.copy()
+            })
+        
+        return pd.DataFrame(portfolio_snapshots)
+
+    def _estimate_shares_from_batch(self, row, all_prices):
+        """Estimate shares using pre-downloaded batch data"""
+        ticker = row['ticker']
+        date = row['transaction_date']
+        
+        try:
+            # Access the close price for this ticker on the closest date
+            if isinstance(all_prices.columns, pd.MultiIndex):
+                # MultiIndex: ('Close', 'AAPL')
+                if ('Close', ticker) not in all_prices.columns:
+                    return None
+                prices = all_prices[('Close', ticker)].dropna()
+            else:
+                # Single ticker or single-level columns
+                if 'Close' not in all_prices.columns:
+                    return None
+                prices = all_prices['Close'].dropna()
+            
+            if len(prices) == 0:
+                return None
+            
+            # Find closest date
+            closest_idx = (prices.index - date).abs().argmin()
+            price = float(prices.iloc[closest_idx])
+            
+            if pd.isna(price) or price <= 0:
+                return None
+            
+            # Estimate amount
+            amount = self._estimate_amount(
+                row['amount_range_low'],
+                row['amount_range_high']
+            )
+            
+            if amount is None or amount <= 0:
+                return None
+            
+            return amount / price
+            
+        except Exception as e:
+            return None
 
 # Usage example:
 if __name__ == "__main__":
