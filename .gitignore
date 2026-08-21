@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Environments
+venv/
+.venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Note: congress_trades.db is intentionally tracked so the analyses are
+# runnable on clone without re-pulling the upstream API. It contains only
+# public-record disclosure data.
